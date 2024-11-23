@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from collections import namedtuple, deque
 import random
 from itertools import count
-import pygame
+import time
 
 
 Transition = namedtuple('Transition',
@@ -230,35 +230,6 @@ class DQNTrainer(Trainer):
         """
         # Here are some tensor operations which might be useful:
 
-        """print("Concat tensors along new dimension:")
-        state_batch = torch.stack(states)
-        print(states)
-        print(state_batch)
-
-        print("Insert a new dimension:")
-        action_batch = actions.unsqueeze(1)
-        print(actions)
-        print(action_batch, end="\n\n")
-
-        # Once you implement the neural net, you can pass a batch of inputs to
-        # the model like so:
-        # q_values = self.net(state_batch)
-
-        print("Selecting elements from:")
-        some_data = torch.tensor([[1,2], [4,3]])
-        print(some_data)
-
-        print("Select indices 0 & 1 along dimension 1")
-        selected_elems = some_data.gather(1, action_batch)
-        print(selected_elems, "\n")
-
-        print("Indices of maximal elements in each row")
-        selected_elems = some_data.argmax(dim=1, keepdim=True)
-        print(selected_elems)
-
-        print("And their values:")
-        print(some_data.gather(1, selected_elems))"""
-
         states, actions, rewards, next_states, dones = zip(*transition_batch)
 
         states = torch.stack(states)
@@ -390,17 +361,19 @@ def example_human_eval(env_name):
     # trainer.calculate_targets([])
 
     # Train the agent on 1000 steps.
-    pol = trainer.train(0.99, 10000)
+    pol = trainer.train(0.99, 100000)
 
     # Visualize the policy for 10 episodes
     human_env = gym.make(env_name, render_mode="human")
-    for _ in range(100):
+    for _ in range(50):
         env_data = human_env.reset()
         state = env_data[0]
         done = False
         while not done:
             action = pol.play(tu.to_torch(state))
+            print(action)
             state, _, done, _, _ = human_env.step(action)
+            time.sleep(0.05)
 
 
 if __name__ == "__main__":

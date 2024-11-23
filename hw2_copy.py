@@ -340,6 +340,7 @@ def example_human_eval(env_name):
         while not done:
             action = pol.play(tu.to_torch(state))
             state, _, done, _, _ = human_env.step(action)
+            print(action)
 
 
 if __name__ == "__main__":

@@ -18,9 +18,11 @@ from itertools import count
 import time
 
 
+torch.manual_seed(42)
 Transition = namedtuple('Transition',
                             ('state', 'action', 'reward', 'next_state', "done"))
 
+# Some parts of the code were taken from https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html
 """
     The Policy/Trainer interface remains the same as in the first assignment:
 """
@@ -84,6 +86,7 @@ class ReplayBuffer:
             raise RuntimeError("Not enough transitions in replay buffer.")
 
         batch = random.sample(self.transitions, batch_size)
+        # batch = self.transitions
 
         return batch
     
@@ -111,6 +114,7 @@ class ReplayBuffer:
     like exponential averaging vs hard updates for the target net.
     You can choose either, or even experiment with both.
 """
+actions = [1, 0, 0, 1, 0, 0, 1, 1, 0, 1]
 
 
 class DQNNet(nn.Module):
@@ -121,21 +125,23 @@ class DQNNet(nn.Module):
         self.layer3 = nn.Linear(128, output_size)
 
     def forward(self, x):
-        # TODO: implement the forward pass, see torch.nn.functional 
-        # for common activation functions. 
-
         x = F.relu(self.layer1(x))
         x = F.relu(self.layer2(x))
         return self.layer3(x)
 
     @torch.no_grad()
-    def play(self, obs, eps=0.0):
+    def play(self, obs, env, eps=0.0, steps=0):
 
         qvals = self(obs)
-        if np.random.rand() <= eps:
-            return np.random.choice(len(qvals))
+        random_number = random.random()
+        if random_number <= eps: # or steps < 8:
+            # return np.random.choice(len(qvals))
+            action = env.action_space.sample()
+            # action = actions[steps]
+            return action
 
         # You can also randomly break ties here.
+        print(qvals)
         x = torch.argmax(qvals)
 
         # Cast from tensor to int so gym does not complain
@@ -146,8 +152,8 @@ class DQNPolicy(Policy):
     def __init__(self, net : DQNNet):
         self.net = net
 
-    def play(self, state):
-        return self.net.play(state)
+    def play(self, state, env):
+        return self.net.play(state, env)
 
     def raw(self, state: int) -> torch.Tensor:
         return self.net(state)
@@ -162,14 +168,14 @@ class DQNTrainer(Trainer):
             self, env, state_dim, num_actions,
             # TODO: Find good hyperparameters working for all three environments and set them as default values.
             # During the grading, we will test your implementation on your own default hyperparameters.
-            lr=0.01, mini_batch=64, max_buffer_size=10000, n_steps=1,
-            initial_eps=1.0, final_eps=0.1, mode=DOUBLE_DQN,
+            lr=0.001, mini_batch=8, max_buffer_size=10000, n_steps=1,
+            initial_eps=0.9, final_eps=0.05, mode=DOUBLE_DQN,
             **kwargs
         ) -> None:
         super(DQNTrainer, self).__init__(env)
         """
             Initialize the DQNTrainer
-            
+
             Args:
                 env: The environment to train on
                 state_dim: The dimension of the state space
@@ -191,7 +197,7 @@ class DQNTrainer(Trainer):
         self.target_net.load_state_dict(self.net.state_dict())
 
         # Initialize the optimizer
-        self.optimizer = optim.Adam(self.net.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.net.parameters(), lr=lr, amsgrad=True)
 
         # Initialize the buffer
         self.buffer = ReplayBuffer(max_buffer_size)
@@ -201,128 +207,100 @@ class DQNTrainer(Trainer):
 
         self.mode = mode
 
-        # TODO: Initialize other necessary variables
-
-
     """
         You can modify or even remove the methods `loss_fn`, `calculate_targets` and `update_net`.
         They serve mostly as an example of how learning works in pytorch.
     """
 
-
     def loss_fn(self, qvals, target_qvals):
         """
             Calculate loss on a batch of Q-values Q(s,a) and a batch of
-            targets. 
+            targets.
 
             You can use an appropriate torch.nn loss.
         """
-        pcriterion = nn.SmoothL1Loss()
-        target_qvals = target_qvals # .unsqueeze(1)
-        loss = pcriterion(qvals, target_qvals)
+        criterion = nn.SmoothL1Loss()
+        loss = criterion(qvals, target_qvals.unsqueeze(1))
         return loss
 
-
-    def calculate_targets(self, transition_batch, gamma):
+    def calculate_targets(self, non_final_mask, non_final_next_states, gamma, reward_batch):
         """
             Recall the constructor arguments `mode` and `n_steps`
             and how they influence the target calculation.
         """
-        # Here are some tensor operations which might be useful:
+        next_state_values = torch.zeros(self.mini_batch)
+        with torch.no_grad():
+            next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1).values
+        target = (next_state_values * gamma) + reward_batch
+        return target
 
-        states, actions, rewards, next_states, dones = zip(*transition_batch)
-
-        states = torch.stack(states)
-        actions = torch.tensor(actions).unsqueeze(1)
-        rewards = torch.tensor(rewards)
-        next_states = torch.stack(next_states)
-        dones = torch.tensor(dones, dtype=torch.bool)
-
-        q_values_next = self.net(next_states).detach()
-        if self.mode == self.DOUBLE_DQN:
-            actions_next = torch.argmax(self.net(next_states), dim=1, keepdim=True)
-            q_values_next = self.target_net(next_states).gather(1, actions_next).squeeze()
-        else:  # Standard DQN or DQN+target
-            q_values_next = q_values_next.max(dim=1)[0]
-
-        targets = rewards + (1 - dones.float()) * gamma * q_values_next
-        return targets
-
-
-    def update_net(self, batch, gamma, *args):
+    def update_net(self, gamma, *args):
         """
             Update of the main net parameters:
 
             1) Calculate gradient estimate from the batch
             2) Do a single step of gradient descent using this estimate
         """
+        if len(self.buffer) < self.mini_batch:
+            return
+        transitions = self.buffer.sample(self.mini_batch)
+        batch = Transition(*zip(*transitions))
 
-        # TODO: calculate these values
-        # transitions = memory.sample(BATCH_SIZE)
-        # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for
-        # detailed explanation). This converts batch-array of Transitions
-        # to Transition of batch-arrays.
+        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
+                                                batch.next_state)), dtype=torch.bool)
+        non_final_next_states = torch.cat([s for s in batch.next_state
+                                           if s is not None])
+        state_batch = torch.cat(batch.state)
+        action_batch = torch.cat(batch.action)
+        reward_batch = torch.cat(batch.reward)
 
-        """
-            ALWAYS call the following three methods in this order,
+        qvals = self.net(state_batch)
+        qvals = qvals.gather(1, action_batch)
 
-            1) Zero saved gradients in optimizer
-            2) Calculate gradient of the loss
-            3) Perform an optimization step
-        """
-        states, actions, rewards, next_states, dones = zip(*batch)
+        target_qvals = self.calculate_targets(non_final_mask, non_final_next_states, gamma, reward_batch)
 
-        states = torch.stack(states)
-        actions = torch.tensor(actions).unsqueeze(1)
-        targets = self.calculate_targets(batch, gamma)
-
-        q_values = self.net(states).gather(1, actions).squeeze()
-        loss = self.loss_fn(q_values, targets)
+        loss = self.loss_fn(qvals, target_qvals)
 
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_value_(self.net.parameters(), 100)
         self.optimizer.step()
 
-        self.target_net.load_state_dict(self.net.state_dict())
-
-        
-
     def train(self, gamma, train_time_steps) -> DQNPolicy:
-        """
-            TODO: Interact with the environment through the methods
-            `env.reset()` and `env.step(action)`
-        """
-        
-        state, _ = self.env.reset()
-
-        # You need to cast states from numpy arrays to torch tensors if you want to pass
-        # them to your neural net. You can use the provided utilities for this
-        state = tu.to_torch(state)
-        eps = 1.0
-
+        state, _ = self.env.reset(seed=42)
+        state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+        eps = 0.9
+        TAU = 0.005
         step = 0
 
         while step < train_time_steps:
-            done = False
-
-            action = self.net.play(state, eps)
+            action = self.net.play(state, self.env, eps, step)
             next_state, reward, terminated, truncated, _ = self.env.step(action)
+            action = torch.tensor([[action]])
+            reward = torch.tensor([reward])
             next_state = tu.to_torch(next_state)
             done = terminated or truncated
+
+            if terminated:
+                next_state = None
+            else:
+                next_state = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
 
             self.buffer.insert((state, action, reward, next_state, done))
             state = next_state
 
             if done:
                 state, _ = self.env.reset()
-                state = tu.to_torch(state)
+                state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
 
-            if len(self.buffer) >= self.mini_batch:
-                batch = self.buffer.sample(self.mini_batch)
-                self.update_net(batch, gamma)
+            self.update_net(gamma)
 
-            if step % 2 == 0:
-                self.target_net.load_state_dict(self.net.state_dict())
+            target_net_state_dict = self.target_net.state_dict()
+            policy_net_state_dict = self.net.state_dict()
+            for key in policy_net_state_dict:
+                target_net_state_dict[key] = policy_net_state_dict[key] * TAU + target_net_state_dict[key] * (
+                        1 - TAU)
+            self.target_net.load_state_dict(target_net_state_dict)
 
             eps = max(self.final_eps, eps - (self.initial_eps - self.final_eps) / train_time_steps)
             step += 1
@@ -357,26 +335,22 @@ def example_human_eval(env_name):
     state_dim, num_actions = get_env_dimensions(env)
 
     trainer = DQNTrainer(env, state_dim, num_actions)
-    # Tensor operations example
-    # trainer.calculate_targets([])
 
     # Train the agent on 1000 steps.
-    pol = trainer.train(0.99, 100000)
+    pol = trainer.train(0.99, 10000)
 
     # Visualize the policy for 10 episodes
     human_env = gym.make(env_name, render_mode="human")
-    for _ in range(50):
+    for _ in range(5):
         env_data = human_env.reset()
         state = env_data[0]
         done = False
         while not done:
-            action = pol.play(tu.to_torch(state))
-            print(action)
+            action = pol.play(tu.to_torch(state), human_env)
             state, _, done, _, _ = human_env.step(action)
-            time.sleep(0.05)
 
 
 if __name__ == "__main__":
     # Evaluate your algorithm on the following three environments
-    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v2"]
+    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v3"]
     example_human_eval(env_names[0])

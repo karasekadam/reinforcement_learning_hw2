@@ -11,6 +11,10 @@ import torch.nn.functional as F
 
 from collections import namedtuple, deque
 import random
+import pandas as pd
+import os
+import pickle
+import json
 
 
 torch.manual_seed(42)
@@ -311,6 +315,7 @@ class DQNTrainer(Trainer):
         state, _ = self.env.reset(seed=42)
         # Convert state to a PyTorch tensor and add a batch dimension
         state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+        init_state = state
 
         # Initialize epsilon for epsilon-greedy exploration
         eps = 0.9  # Starting exploration rate
@@ -323,7 +328,10 @@ class DQNTrainer(Trainer):
         # Log the mode being trained (DQN, DQN+target, or DoubleDQN)
         print(f"Training {self.mode}")
         self.episode_rewards = []
+        self.discounted_episode_rewards = []
+        self.max_s0_values = []
         total_reward = 0
+        total_discounted_reward = 0
         # Main training loop
         while step < train_time_steps:
             # Log progress every 1000 steps
@@ -337,6 +345,7 @@ class DQNTrainer(Trainer):
             # Take a step in the environment and observe the result
             next_state, reward, terminated, truncated, _ = self.env.step(action)
             total_reward += reward
+            total_discounted_reward += reward * gamma ** step
 
             # Convert action and reward to PyTorch tensors
             action = torch.tensor([[action]])  # Add batch dimension
@@ -359,14 +368,17 @@ class DQNTrainer(Trainer):
             # Add the transition to the replay buffer
             self.buffer.insert((state, action, reward, next_state, done))
 
-            # Update the current state to the next state
-            state = next_state
-
             # If the episode is done, reset the environment
             if done:
+                max_s0_value = torch.max(self.net(init_state)).item()
+                self.max_s0_values.append(max_s0_value)
+                self.discounted_episode_rewards.append(total_discounted_reward)
                 self.episode_rewards.append(total_reward)
                 state, _ = self.env.reset()
                 state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+                total_reward = 0
+                total_discounted_reward = 0
+
 
             # Perform a gradient descent step to update the main network
             self.update_net(gamma)
@@ -391,6 +403,26 @@ class DQNTrainer(Trainer):
             step += 1
 
         # Return the trained policy network wrapped in a DQNPolicy object
+        env_name = self.env.spec.entry_point.split(":")[1]
+        results_path = f"results/{env_name}_max_results.json"
+        # discounted_path = f"results/{env_name}_discounted_results.pkl"
+        #rewards_path = f"results/{env_name}_rewards_results.pkl"
+
+        # check if results file exists
+        if os.path.isfile(results_path):
+            with open(results_path, "r") as f:
+                old_results = json.load(f)
+            experiment_number = len(old_results) // 3
+            old_results["max_" + str(experiment_number)] = self.max_s0_values
+            old_results["discounted_" + str(experiment_number)] = self.discounted_episode_rewards
+            old_results["undiscounted_" + str(experiment_number)] = self.episode_rewards
+            with open(results_path, "w") as f:
+                json.dump(old_results, f)
+        else:
+            with open(results_path, "w") as f:
+                results = {"max_0": self.max_s0_values, "discounted_0": self.discounted_episode_rewards, "undiscounted_0": self.episode_rewards}
+                json.dump(results, f)
+
         return DQNPolicy(self.net)
 
 
@@ -428,7 +460,7 @@ def example_human_eval(env_name):
     # trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
 
     # Train the agent on 1000 steps.
-    pol1 = trainer1.train(0.99, 5000)
+    pol1 = trainer1.train(0.99, 500)
     mean_undiscounted_return = np.mean(trainer1.episode_rewards)
     print(f"Mean Undiscounted Return: {mean_undiscounted_return}")
     # pol2 = trainer2.train(0.99, 5000)

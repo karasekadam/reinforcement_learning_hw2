@@ -11,8 +11,6 @@ import torch.nn.functional as F
 
 from collections import namedtuple, deque
 import random
-from itertools import count
-import time
 
 
 torch.manual_seed(42)
@@ -165,8 +163,8 @@ class DQNTrainer(Trainer):
             self, env, state_dim, num_actions,
             # TODO: Find good hyperparameters working for all three environments and set them as default values.
             # During the grading, we will test your implementation on your own default hyperparameters.
-            lr=0.001, mini_batch=64, max_buffer_size=10000, n_steps=1,
-            initial_eps=0.99, final_eps=0.2, mode=DQN, update_target_every=10,
+            lr=0.001, mini_batch=8, max_buffer_size=10000, n_steps=1,
+            initial_eps=1.0, final_eps=0.01, mode=DQN, update_target_every=10,
             **kwargs
         ) -> None:
         super(DQNTrainer, self).__init__(env)
@@ -298,7 +296,7 @@ class DQNTrainer(Trainer):
         torch.nn.utils.clip_grad_value_(self.net.parameters(), 100)
         self.optimizer.step()
 
-    def train(self, gamma, train_time_steps) -> DQNPolicy:
+    def train(self, gamma, train_time_steps, *args, **kwargs) -> DQNPolicy:
         """
         Train the DQN agent on the given environment.
 
@@ -324,10 +322,12 @@ class DQNTrainer(Trainer):
 
         # Log the mode being trained (DQN, DQN+target, or DoubleDQN)
         print(f"Training {self.mode}")
-
+        self.episode_rewards = []
+        total_reward = 0
         # Main training loop
         while step < train_time_steps:
             # Log progress every 1000 steps
+            
             if (step % 1000) == 0:
                 print(f"step: {step // 1000}")
 
@@ -336,6 +336,7 @@ class DQNTrainer(Trainer):
 
             # Take a step in the environment and observe the result
             next_state, reward, terminated, truncated, _ = self.env.step(action)
+            total_reward += reward
 
             # Convert action and reward to PyTorch tensors
             action = torch.tensor([[action]])  # Add batch dimension
@@ -363,6 +364,7 @@ class DQNTrainer(Trainer):
 
             # If the episode is done, reset the environment
             if done:
+                self.episode_rewards.append(total_reward)
                 state, _ = self.env.reset()
                 state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
 
@@ -421,47 +423,49 @@ def example_human_eval(env_name):
     env = gym.make(env_name)
     state_dim, num_actions = get_env_dimensions(env)
 
-    trainer1 = DQNTrainer(env, state_dim, num_actions, mode=DQN)
-    trainer2 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
-    trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
+    trainer1 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
+    # trainer2 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
+    # trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
 
     # Train the agent on 1000 steps.
     pol1 = trainer1.train(0.99, 5000)
-    pol2 = trainer2.train(0.99, 5000)
-    pol3 = trainer3.train(0.99, 5000)
+    mean_undiscounted_return = np.mean(trainer1.episode_rewards)
+    print(f"Mean Undiscounted Return: {mean_undiscounted_return}")
+    # pol2 = trainer2.train(0.99, 5000)
+    # pol3 = trainer3.train(0.99, 5000)
 
     # Visualize the policy for 10 episodes
     human_env = gym.make(env_name, render_mode="human")
-    for i in range(3):
-        print(f"Attempts number {i}")
+    for i in range(15):
+        # print(f"Attempts number {i}")
         env_data = human_env.reset()
         state = env_data[0]
         done = False
         counter = 0
-        while not done and counter < 200:
+        while not done:
             action = pol1.play(tu.to_torch(state), human_env)
             state, _, done, _, _ = human_env.step(action)
             counter += 1
-        print(f"DQN = {counter}")
-        env_data = human_env.reset()
-        done = False
-        counter = 0
-        while not done and counter < 200:
-            action = pol2.play(tu.to_torch(state), human_env)
-            state, _, done, _, _ = human_env.step(action)
-            counter += 1
-        print(f"DQN+target = {counter}")
-        env_data = human_env.reset()
-        done = False
-        counter = 0
-        while not done and counter < 200:
-            action = pol3.play(tu.to_torch(state), human_env)
-            state, _, done, _, _ = human_env.step(action)
-            counter += 1
-        print(f"DoubleDQN = {counter}")
+        # print(f"DQN = {counter}")
+        # env_data = human_env.reset()
+        # done = False
+        # counter = 0
+        # while not done and counter < 200:
+        #     action = pol2.play(tu.to_torch(state), human_env)
+        #     state, _, done, _, _ = human_env.step(action)
+        #     counter += 1
+        # print(f"DQN+target = {counter}")
+        # env_data = human_env.reset()
+        # done = False
+        # counter = 0
+        # while not done and counter < 200:
+        #     action = pol3.play(tu.to_torch(state), human_env)
+        #     state, _, done, _, _ = human_env.step(action)
+        #     counter += 1
+        # print(f"DoubleDQN = {counter}")
 
 
 if __name__ == "__main__":
     # Evaluate your algorithm on the following three environments
     env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v3"]
-    example_human_eval(env_names[1])
+    example_human_eval(env_names[0])

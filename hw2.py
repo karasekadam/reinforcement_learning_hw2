@@ -9,10 +9,15 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
+from collections import namedtuple, deque
 import random
 
 
+torch.manual_seed(42)
+Transition = namedtuple('Transition',
+                            ('state', 'action', 'reward', 'next_state', "done"))
 
+# Some parts of the code were taken from https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html
 """
     The Policy/Trainer interface remains the same as in the first assignment:
 """
@@ -45,16 +50,19 @@ class ReplayBuffer:
         Example implementation of a simple replay buffer.
         You will need to modify this, especially to support n-step updates.
 
-        Important: You are free to modify this class or provide your own. 
+        Important: You are free to modify this class or provide your own.
         It is not part of the required interface.
     """
 
-    def __init__(self, capacity):
+    def __init__(self, capacity, n_steps: int, gamma: float = 0.99):
         self.idx = 0
         self.capacity = capacity
 
         # s, a, r, s', done
         self.transitions = []
+        self.buffer = deque(maxlen=n_steps)
+        self.gamma = gamma
+        self.n_steps = n_steps
 
     def insert(self, transition):
         """
@@ -62,11 +70,20 @@ class ReplayBuffer:
 
             `transition` is a tuple (s, a, r, s', done)
         """
-        if len(self.transitions) < self.capacity:
-            self.transitions.append(transition)
-        else:
-            self.transitions[self.idx] = transition
-            self.idx = (self.idx + 1) % self.capacity
+        self.buffer.append(transition)
+        if len(self.buffer) == self.n_steps:
+            state, action, reward, next_state, done = self.buffer[0]
+            total_reward = sum(
+                self.gamma ** i * self.buffer[i][2] for i in range(self.n_steps)
+            )
+            final_state = self.buffer[-1][3]
+            final_done = any(t[4] for t in self.buffer)  # True if any step is terminal
+            self.buffer.popleft()
+            if len(self.transitions) < self.capacity:
+                self.transitions.append((state, action, total_reward, final_state, final_done))
+            else:
+                self.transitions[self.idx] = (state, action, total_reward, final_state, final_done)
+                self.idx = (self.idx + 1) % self.capacity
 
     def sample(self, batch_size):
         """
@@ -78,7 +95,7 @@ class ReplayBuffer:
         batch = random.sample(self.transitions, batch_size)
 
         return batch
-    
+
     def __len__(self):
         return len(self.transitions)
 
@@ -108,40 +125,30 @@ class ReplayBuffer:
 class DQNNet(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=86):
         super(DQNNet, self).__init__()
-
-        # Dummy layer to prevent errors
-        self.dummy_layer = nn.Linear(1, 1)
-
-        # TODO: Implement the network architecture - see torch.nn layers.
-
+        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.layer2 = nn.Linear(hidden_size, hidden_size)
+        self.layer3 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
-        # TODO: implement the forward pass, see torch.nn.functional 
-        # for common activation functions. 
-
-        # Dummy return value to prevent errors
-        return torch.zeros(2)
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        return self.layer3(x)
 
     @torch.no_grad()
-    def play(self, obs, eps=0.0):
-
+    def play(self, obs, env, eps=0.0, steps=0):
         qvals = self(obs)
-        if np.random.rand() <= eps:
-            return np.random.choice(len(qvals))
-
-        # You can also randomly break ties here.
-        x = torch.argmax(qvals)
-
-        # Cast from tensor to int so gym does not complain
-        return int(x)
-
+        if random.random() <= eps:
+            action = env.action_space.sample()
+        else:
+            action = torch.argmax(qvals).item()  # Ensuring action is a Python int
+        return action
 
 class DQNPolicy(Policy):
     def __init__(self, net : DQNNet):
         self.net = net
 
-    def play(self, state):
-        return self.net.play(state)
+    def play(self, state, env):
+        return self.net.play(state, env)
 
     def raw(self, state: int) -> torch.Tensor:
         return self.net(state)
@@ -156,14 +163,14 @@ class DQNTrainer(Trainer):
             self, env, state_dim, num_actions,
             # TODO: Find good hyperparameters working for all three environments and set them as default values.
             # During the grading, we will test your implementation on your own default hyperparameters.
-            lr=0.01, mini_batch=64, max_buffer_size=10000, n_steps=1,
-            initial_eps=1.0, final_eps=0.1, mode=DQN,
+            lr=0.001, mini_batch=8, max_buffer_size=10000, n_steps=1,
+            initial_eps=1.0, final_eps=0.01, mode=DQN, update_target_every=10,
             **kwargs
         ) -> None:
         super(DQNTrainer, self).__init__(env)
         """
             Initialize the DQNTrainer
-            
+
             Args:
                 env: The environment to train on
                 state_dim: The dimension of the state space
@@ -185,144 +192,205 @@ class DQNTrainer(Trainer):
         self.target_net.load_state_dict(self.net.state_dict())
 
         # Initialize the optimizer
-        self.optimizer = optim.Adam(self.net.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.net.parameters(), lr=lr, amsgrad=True)
 
         # Initialize the buffer
-        self.buffer = ReplayBuffer(max_buffer_size)
+        self.buffer = ReplayBuffer(max_buffer_size, n_steps)
+        self.mini_batch = mini_batch
+        self.initial_eps = initial_eps
+        self.final_eps = final_eps
 
-        # TODO: Initialize other necessary variables
-
+        self.mode = mode
+        self.update_target_every = update_target_every
 
     """
         You can modify or even remove the methods `loss_fn`, `calculate_targets` and `update_net`.
         They serve mostly as an example of how learning works in pytorch.
     """
 
-
     def loss_fn(self, qvals, target_qvals):
         """
             Calculate loss on a batch of Q-values Q(s,a) and a batch of
-            targets. 
+            targets.
 
             You can use an appropriate torch.nn loss.
         """
-        pass
+        criterion = nn.SmoothL1Loss()
+        loss = criterion(qvals, target_qvals.unsqueeze(1))
+        return loss
 
-
-    def calculate_targets(self, transition_batch):
+    def calculate_targets(self, non_final_mask, non_final_next_states, gamma, reward_batch):
         """
-            Recall the constructor arguments `mode` and `n_steps`
-            and how they influence the target calculation.
+        Calculate target Q-values based on the mode (`DQN`, `DQN+target`, `DoubleDQN`).
+
+        Args:
+            non_final_mask (torch.Tensor): Boolean mask indicating non-terminal states.
+            non_final_next_states (torch.Tensor): Tensor of next states for non-terminal transitions.
+            gamma (float): Discount factor for future rewards.
+            reward_batch (torch.Tensor): Tensor of rewards for the batch.
+
+        Returns:
+            torch.Tensor: Target Q-values for the batch.
         """
-        # Here are some tensor operations which might be useful:
+        # Initialize a tensor to store next state values; start with zeros for all states
+        next_state_values = torch.zeros(self.mini_batch)
 
-        states = [ torch.tensor([1.0]), torch.tensor([1.2]) ]
-        actions = torch.tensor([ 0, 1 ])
+        # Disable gradient computation for target calculation
+        with torch.no_grad():
+            if self.mode == "DQN":
+                # For standard DQN, use the policy network to compute Q-values for the next states
+                # Take the maximum Q-value for each state (Q-learning update rule)
+                next_state_values[non_final_mask] = self.net(non_final_next_states).max(1).values
 
-        print("Concat tensors along new dimension:")
-        state_batch = torch.stack(states)
-        print(states)
-        print(state_batch)
+            elif self.mode == "DQN+target":
+                # For DQN with a target network, use the target network to compute Q-values for the next states
+                # Again, take the maximum Q-value for each state
+                next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1).values
 
-        print("Insert a new dimension:")
-        action_batch = actions.unsqueeze(1)
-        print(actions)
-        print(action_batch, end="\n\n")
+            elif self.mode == "DoubleDQN":
+                # For Double DQN:
+                # Step 1: Use the policy network to select the best action (argmax) for each next state
+                next_action_indices = self.net(non_final_next_states).argmax(1, keepdim=True)
+                # Step 2: Use the target network to evaluate the Q-value of the selected action
+                next_state_values[non_final_mask] = self.target_net(non_final_next_states).gather(1, next_action_indices).squeeze(1)
 
-        # Once you implement the neural net, you can pass a batch of inputs to
-        # the model like so:
-        q_values = self.net(state_batch)
+            else:
+                # Raise an error if the mode is not recognized
+                raise ValueError(f"Unknown mode: {self.mode}")
 
-        print("Selecting elements from:")
-        some_data = torch.tensor([[1,2], [4,3]])
-        print(some_data)
+        # Calculate the target Q-values using the Bellman equation:
+        # target = reward + gamma * max(next_state_value)
+        target = reward_batch + (gamma * next_state_values)
 
-        print("Select indices 0 & 1 along dimension 1")
-        selected_elems = some_data.gather(1, action_batch)
-        print(selected_elems, "\n")
+        # Return the computed target Q-values
+        return target
 
-        print("Indices of maximal elements in each row")
-        selected_elems = some_data.argmax(dim=1, keepdim=True)
-        print(selected_elems)
-
-        print("And their values:")
-        print(some_data.gather(1, selected_elems))
-
-        return torch.tensor(42)
-
-
-    def update_net(self, *args):
+    def update_net(self, gamma, *args):
         """
             Update of the main net parameters:
 
             1) Calculate gradient estimate from the batch
             2) Do a single step of gradient descent using this estimate
         """
+        if len(self.buffer) < self.mini_batch:
+            return
+        transitions = self.buffer.sample(self.mini_batch)
+        batch = Transition(*zip(*transitions))
 
-        # TODO: calculate these values
-        qvals = ...
+        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool)
+        x = [s for s in batch.next_state if s is not None]
+        non_final_next_states = torch.cat(x)
+        state_batch = torch.cat(batch.state)
+        action_batch = torch.cat(batch.action)
+        reward_batch = torch.cat(batch.reward)
 
-        target_qvals = self.calculate_targets([])
+        qvals = self.net(state_batch)
+        qvals = qvals.gather(1, action_batch)
 
-        # Define the loss function
+        target_qvals = self.calculate_targets(non_final_mask, non_final_next_states, gamma, reward_batch)
+
         loss = self.loss_fn(qvals, target_qvals)
 
-        """
-            ALWAYS call the following three methods in this order,
-
-            1) Zero saved gradients in optimizer
-            2) Calculate gradient of the loss
-            3) Perform an optimization step
-        """
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_value_(self.net.parameters(), 100)
         self.optimizer.step()
 
-        
-
-    def train(self, gamma, train_time_steps) -> DQNPolicy:
+    def train(self, gamma, train_time_steps, *args, **kwargs) -> DQNPolicy:
         """
-            TODO: Interact with the environment through the methods
-            `env.reset()` and `env.step(action)`
+        Train the DQN agent on the given environment.
+
+        Args:
+            gamma (float): Discount factor for future rewards.
+            train_time_steps (int): Total number of training time steps.
+
+        Returns:
+            DQNPolicy: The trained policy network.
         """
-        
-        state, _ = self.env.reset()
+        # Reset the environment and get the initial state
+        state, _ = self.env.reset(seed=42)
+        # Convert state to a PyTorch tensor and add a batch dimension
+        state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
 
-        # You need to cast states from numpy arrays to torch tensors if you want to pass
-        # them to your neural net. You can use the provided utilities for this
-        state = tu.to_torch(state)
-        eps = 1.0
-
+        # Initialize epsilon for epsilon-greedy exploration
+        eps = 0.9  # Starting exploration rate
+        # TAU parameter for soft updates of the target network
+        TAU = 0.005
+        # Counter for the number of steps
         step = 0
+        self.buffer.gamma = gamma
 
+        # Log the mode being trained (DQN, DQN+target, or DoubleDQN)
+        print(f"Training {self.mode}")
+        self.episode_rewards = []
+        total_reward = 0
+        # Main training loop
         while step < train_time_steps:
-            done = False
+            # Log progress every 1000 steps
+            
+            if (step % 1000) == 0:
+                print(f"step: {step // 1000}")
 
-            while not done and step < train_time_steps:
+            # Select an action using the epsilon-greedy policy
+            action = self.net.play(state, self.env, eps, step)
 
-                action = self.net.play(state, eps)
-                succ, rew, terminated, truncated, _ = self.env.step(action)
+            # Take a step in the environment and observe the result
+            next_state, reward, terminated, truncated, _ = self.env.step(action)
+            total_reward += reward
 
-                """
-                    TODO: 
-                        1) Save the transition into the replay buffer.
-                        2) Sample a minibatch from the buffer
-                        3) Update the main network
-                        4) (Possibly) update the target network as well.
-                """
+            # Convert action and reward to PyTorch tensors
+            action = torch.tensor([[action]])  # Add batch dimension
+            reward = torch.tensor([reward])  # Convert to tensor
 
-                transition = ...
+            # Convert next_state to a PyTorch tensor
+            # next_state = tu.to_torch(next_state)
+            next_state = next_state
 
-                self.buffer.insert(transition)
+            # Determine if the episode is done (terminated or truncated)
+            done = terminated or truncated
 
-                if len(self.buffer) >= 42:
-                    batch = self.buffer.sample(batch_size=42)
+            # If the episode terminated, set next_state to None
+            if terminated:
+                next_state = None
+            else:
+                # Otherwise, convert next_state to a tensor and add a batch dimension
+                next_state = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
 
-                step += 1
+            # Add the transition to the replay buffer
+            self.buffer.insert((state, action, reward, next_state, done))
 
-                if terminated or truncated:
-                    done = True
+            # Update the current state to the next state
+            state = next_state
 
+            # If the episode is done, reset the environment
+            if done:
+                self.episode_rewards.append(total_reward)
+                state, _ = self.env.reset()
+                state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+
+            # Perform a gradient descent step to update the main network
+            self.update_net(gamma)
+
+            # Perform a soft update of the target network using Polyak averaging
+            if step % self.update_target_every == 0:
+                target_net_state_dict = self.target_net.state_dict()
+                policy_net_state_dict = self.net.state_dict()
+                for key in policy_net_state_dict:
+                    # Blend the weights of the main and target networks
+                    target_net_state_dict[key] = policy_net_state_dict[key] * TAU + target_net_state_dict[key] * (1 - TAU)
+                # Load the updated parameters into the target network
+                self.target_net.load_state_dict(target_net_state_dict)
+
+            # Decay epsilon for exploration-exploitation tradeoff
+            eps = max(self.final_eps, eps - (self.initial_eps - self.final_eps) / train_time_steps)
+
+            # Log the current epsilon value
+            # print(eps)
+
+            # Increment the step counter
+            step += 1
+
+        # Return the trained policy network wrapped in a DQNPolicy object
         return DQNPolicy(self.net)
 
 
@@ -349,27 +417,55 @@ def get_env_dimensions(env):
     Demonstration code - get states/actions, play randomly
 """
 def example_human_eval(env_name):
+    DQN = "DQN"
+    DQN_TARGET = "DQN+target"
+    DOUBLE_DQN = "DoubleDQN"
     env = gym.make(env_name)
     state_dim, num_actions = get_env_dimensions(env)
 
-    trainer = DQNTrainer(env, state_dim, num_actions)
-    # Tensor operations example
-    trainer.calculate_targets([])
+    trainer1 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
+    # trainer2 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
+    # trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
 
     # Train the agent on 1000 steps.
-    pol = trainer.train(0.99, 1000)
+    pol1 = trainer1.train(0.99, 5000)
+    mean_undiscounted_return = np.mean(trainer1.episode_rewards)
+    print(f"Mean Undiscounted Return: {mean_undiscounted_return}")
+    # pol2 = trainer2.train(0.99, 5000)
+    # pol3 = trainer3.train(0.99, 5000)
 
     # Visualize the policy for 10 episodes
     human_env = gym.make(env_name, render_mode="human")
-    for _ in range(10):
-        state = human_env.reset()[0]
+    for i in range(15):
+        # print(f"Attempts number {i}")
+        env_data = human_env.reset()
+        state = env_data[0]
         done = False
+        counter = 0
         while not done:
-            action = pol.play(tu.to_torch(state))
+            action = pol1.play(tu.to_torch(state), human_env)
             state, _, done, _, _ = human_env.step(action)
+            counter += 1
+        # print(f"DQN = {counter}")
+        # env_data = human_env.reset()
+        # done = False
+        # counter = 0
+        # while not done and counter < 200:
+        #     action = pol2.play(tu.to_torch(state), human_env)
+        #     state, _, done, _, _ = human_env.step(action)
+        #     counter += 1
+        # print(f"DQN+target = {counter}")
+        # env_data = human_env.reset()
+        # done = False
+        # counter = 0
+        # while not done and counter < 200:
+        #     action = pol3.play(tu.to_torch(state), human_env)
+        #     state, _, done, _, _ = human_env.step(action)
+        #     counter += 1
+        # print(f"DoubleDQN = {counter}")
 
 
 if __name__ == "__main__":
     # Evaluate your algorithm on the following three environments
-    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v2"]
+    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v3"]
     example_human_eval(env_names[0])

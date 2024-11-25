@@ -351,10 +351,6 @@ class DQNTrainer(Trainer):
             action = torch.tensor([[action]])  # Add batch dimension
             reward = torch.tensor([reward])  # Convert to tensor
 
-            # Convert next_state to a PyTorch tensor
-            # next_state = tu.to_torch(next_state)
-            next_state = next_state
-
             # Determine if the episode is done (terminated or truncated)
             done = terminated or truncated
 
@@ -367,6 +363,7 @@ class DQNTrainer(Trainer):
 
             # Add the transition to the replay buffer
             self.buffer.insert((state, action, reward, next_state, done))
+            state = next_state
 
             # If the episode is done, reset the environment
             if done:
@@ -405,8 +402,6 @@ class DQNTrainer(Trainer):
         # Return the trained policy network wrapped in a DQNPolicy object
         env_name = self.env.spec.entry_point.split(":")[1]
         results_path = f"results/{env_name}_max_results.json"
-        # discounted_path = f"results/{env_name}_discounted_results.pkl"
-        #rewards_path = f"results/{env_name}_rewards_results.pkl"
 
         # check if results file exists
         if os.path.isfile(results_path):
@@ -460,7 +455,7 @@ def example_human_eval(env_name):
     # trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
 
     # Train the agent on 1000 steps.
-    pol1 = trainer1.train(0.99, 500)
+    pol1 = trainer1.train(0.99, 50000)
     mean_undiscounted_return = np.mean(trainer1.episode_rewards)
     print(f"Mean Undiscounted Return: {mean_undiscounted_return}")
     # pol2 = trainer2.train(0.99, 5000)

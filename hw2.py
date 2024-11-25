@@ -59,12 +59,15 @@ class ReplayBuffer:
         It is not part of the required interface.
     """
 
-    def __init__(self, capacity):
+    def __init__(self, capacity, n_steps: int, gamma: float = 0.99):
         self.idx = 0
         self.capacity = capacity
 
         # s, a, r, s', done
         self.transitions = []
+        self.buffer = deque(maxlen=n_steps)
+        self.gamma = gamma
+        self.n_steps = n_steps
 
     def insert(self, transition):
         """
@@ -72,11 +75,20 @@ class ReplayBuffer:
 
             `transition` is a tuple (s, a, r, s', done)
         """
-        if len(self.transitions) < self.capacity:
-            self.transitions.append(transition)
-        else:
-            self.transitions[self.idx] = transition
-            self.idx = (self.idx + 1) % self.capacity
+        self.buffer.append(transition)
+        if len(self.buffer) == self.n_steps:
+            state, action, reward, next_state, done = self.buffer[0]
+            total_reward = sum(
+                self.gamma ** i * self.buffer[i][2] for i in range(self.n_steps)
+            )
+            final_state = self.buffer[-1][3]
+            final_done = any(t[4] for t in self.buffer)  # True if any step is terminal
+            self.buffer.popleft()
+            if len(self.transitions) < self.capacity:
+                self.transitions.append((state, action, total_reward, final_state, final_done))
+            else:
+                self.transitions[self.idx] = (state, action, total_reward, final_state, final_done)
+                self.idx = (self.idx + 1) % self.capacity
 
     def sample(self, batch_size):
         """
@@ -86,7 +98,6 @@ class ReplayBuffer:
             raise RuntimeError("Not enough transitions in replay buffer.")
 
         batch = random.sample(self.transitions, batch_size)
-        # batch = self.transitions
 
         return batch
     
@@ -141,7 +152,6 @@ class DQNNet(nn.Module):
             return action
 
         # You can also randomly break ties here.
-        print(qvals)
         x = torch.argmax(qvals)
 
         # Cast from tensor to int so gym does not complain
@@ -200,7 +210,7 @@ class DQNTrainer(Trainer):
         self.optimizer = optim.Adam(self.net.parameters(), lr=lr, amsgrad=True)
 
         # Initialize the buffer
-        self.buffer = ReplayBuffer(max_buffer_size)
+        self.buffer = ReplayBuffer(max_buffer_size, n_steps)
         self.mini_batch = mini_batch
         self.initial_eps = initial_eps
         self.final_eps = final_eps
@@ -272,13 +282,14 @@ class DQNTrainer(Trainer):
         eps = 0.9
         TAU = 0.005
         step = 0
+        self.buffer.gamma = gamma
 
         while step < train_time_steps:
             action = self.net.play(state, self.env, eps, step)
             next_state, reward, terminated, truncated, _ = self.env.step(action)
             action = torch.tensor([[action]])
             reward = torch.tensor([reward])
-            next_state = tu.to_torch(next_state)
+            next_state = next_state
             done = terminated or truncated
 
             if terminated:
@@ -337,7 +348,7 @@ def example_human_eval(env_name):
     trainer = DQNTrainer(env, state_dim, num_actions)
 
     # Train the agent on 1000 steps.
-    pol = trainer.train(0.99, 10000)
+    pol = trainer.train(0.99, 100000)
 
     # Visualize the policy for 10 episodes
     human_env = gym.make(env_name, render_mode="human")

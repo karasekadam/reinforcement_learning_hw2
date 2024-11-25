@@ -11,6 +11,7 @@ with open(f"results/{env_name}.json", "r") as f:
     data_by_epoch = json.load(f)
 
 keys = data_by_epoch.keys()
+keys = [key for key in keys if "4" in key]
 max_values = [data_by_epoch[key] for key in keys if "max" in key]
 discounted_values = [data_by_epoch[key] for key in keys if "discounted" in key and "undiscounted" not in key]
 undiscounted_values = [data_by_epoch[key] for key in keys if "undiscounted" in key]

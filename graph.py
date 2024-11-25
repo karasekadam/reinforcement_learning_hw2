@@ -12,7 +12,7 @@ with open(f"results/{env_name}.json", "r") as f:
 
 keys = data_by_epoch.keys()
 max_values = [data_by_epoch[key] for key in keys if "max" in key]
-discounted_values = [data_by_epoch[key] for key in keys if "discounted" in key]
+discounted_values = [data_by_epoch[key] for key in keys if "discounted" in key and "undiscounted" not in key]
 undiscounted_values = [data_by_epoch[key] for key in keys if "undiscounted" in key]
 
 minimal_len_max = min([len(x) for x in max_values])
@@ -63,38 +63,39 @@ epochs = [i for i in range(minimal_len_max)]
 plt.figure(figsize=(10, 6))
 
 # Median line
-plt.plot(epochs, processed_data["max"]["avg"], label="Max action value in s0", color="red", linewidth=2)
+plt.plot(epochs, processed_data["max"]["avg"], label="Max action value in s0 - avg", color="red", linewidth=2)
 plt.fill_between(epochs, (np.array(processed_data["max"]["avg"]) - np.array(processed_data["max"]["std"])),
                  (np.array(processed_data["max"]["avg"]) + np.array(processed_data["max"]["std"])),
                  color="orange", alpha=0.4, label="Max action value in s0 - Std")
 
 plt.grid()
 plt.xlabel("Epochs")
-plt.ylabel("Initial state value")
-plt.title(f"jojo")
+plt.ylabel("Initial state best action value")
+plt.title(f"Best action value in initial state for {env_name}")
 plt.legend()
 plt.show()
 
-plt.plot(epochs, processed_data["discounted"]["avg"], label="Discounted epoch value", color="blue", linewidth=2)
-plt.fill_between(epochs, (np.array(processed_data["undiscounted"]["avg"]) - np.array(processed_data["undiscounted"]["std"])),
-                    (np.array(processed_data["undiscounted"]["avg"]) + np.array(processed_data["undiscounted"]["std"])),
-                    color="lightgreen", alpha=0.4, label="Undiscounted epoch value - Std")
-
-plt.grid()
-plt.xlabel("Epochs")
-plt.ylabel("Initial state value")
-plt.title(f"jojo")
-plt.legend()
-plt.show()
-
-plt.plot(epochs, processed_data["undiscounted"]["avg"], label="Undiscounted epoch value", color="green", linewidth=2)
+print((np.array(processed_data["discounted"]["avg"]) - np.array(processed_data["discounted"]["std"])))
+plt.plot(epochs, processed_data["discounted"]["avg"], label="Discounted epoch value - avg", color="blue", linewidth=2)
 plt.fill_between(epochs, (np.array(processed_data["discounted"]["avg"]) - np.array(processed_data["discounted"]["std"])),
                     (np.array(processed_data["discounted"]["avg"]) + np.array(processed_data["discounted"]["std"])),
-                    color="lightblue", alpha=0.4, label="Discounted epoch value - Std")
+                    color="lightgreen", alpha=0.4, label="discounted epoch value - Std")
 
 plt.grid()
 plt.xlabel("Epochs")
-plt.ylabel("Initial state value")
-plt.title(f"jojo")
+plt.ylabel("Discounted rewards")
+plt.title(f"Discounted rewards for {env_name}")
+plt.legend()
+plt.show()
+
+plt.plot(epochs, processed_data["undiscounted"]["avg"], label="Undiscounted epoch value - avg", color="green", linewidth=2)
+plt.fill_between(epochs, (np.array(processed_data["undiscounted"]["avg"]) - np.array(processed_data["undiscounted"]["std"])),
+                    (np.array(processed_data["undiscounted"]["avg"]) + np.array(processed_data["undiscounted"]["std"])),
+                    color="lightblue", alpha=0.4, label="Undiscounted epoch value - Std")
+
+plt.grid()
+plt.xlabel("Epochs")
+plt.ylabel("Undiscounted rewards")
+plt.title(f"Undiscounted rewards for {env_name}")
 plt.legend()
 plt.show()

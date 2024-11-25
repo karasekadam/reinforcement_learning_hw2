@@ -127,7 +127,7 @@ class ReplayBuffer:
 
 
 class DQNNet(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=42):
+    def __init__(self, input_size, output_size, hidden_size=100):
         super(DQNNet, self).__init__()
         self.layer1 = nn.Linear(input_size, hidden_size)
         self.layer2 = nn.Linear(hidden_size, hidden_size)
@@ -167,7 +167,7 @@ class DQNTrainer(Trainer):
             self, env, state_dim, num_actions,
             # TODO: Find good hyperparameters working for all three environments and set them as default values.
             # During the grading, we will test your implementation on your own default hyperparameters.
-            lr=0.001, mini_batch=128, max_buffer_size=10000, n_steps=10,
+            lr=0.001, mini_batch=128, max_buffer_size=10000, n_steps=5,
             initial_eps=1.0, final_eps=0.01, mode=DQN, update_target_every=1,
             **kwargs
         ) -> None:
@@ -333,6 +333,7 @@ class DQNTrainer(Trainer):
         total_reward = 0
         total_discounted_reward = 0
         # Main training loop
+        epoch_step = 0
         while step < train_time_steps:
             # Log progress every 1000 steps
             
@@ -345,7 +346,7 @@ class DQNTrainer(Trainer):
             # Take a step in the environment and observe the result
             next_state, reward, terminated, truncated, _ = self.env.step(action)
             total_reward += reward
-            total_discounted_reward += reward * gamma ** step
+            total_discounted_reward += reward * (gamma ** epoch_step)
 
             # Convert action and reward to PyTorch tensors
             action = torch.tensor([[action]])  # Add batch dimension
@@ -375,6 +376,7 @@ class DQNTrainer(Trainer):
                 state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
                 total_reward = 0
                 total_discounted_reward = 0
+                epoch_step = 0
 
 
             # Perform a gradient descent step to update the main network
@@ -398,6 +400,7 @@ class DQNTrainer(Trainer):
 
             # Increment the step counter
             step += 1
+            epoch_step += 1
 
         # Return the trained policy network wrapped in a DQNPolicy object
         env_name = self.env.spec.entry_point.split(":")[1]

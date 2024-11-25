@@ -9,9 +9,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-import math
-import matplotlib
-import matplotlib.pyplot as plt
 from collections import namedtuple, deque
 import random
 from itertools import count
@@ -55,7 +52,7 @@ class ReplayBuffer:
         Example implementation of a simple replay buffer.
         You will need to modify this, especially to support n-step updates.
 
-        Important: You are free to modify this class or provide your own. 
+        Important: You are free to modify this class or provide your own.
         It is not part of the required interface.
     """
 
@@ -89,7 +86,7 @@ class ReplayBuffer:
         # batch = self.transitions
 
         return batch
-    
+
     def __len__(self):
         return len(self.transitions)
 
@@ -114,15 +111,14 @@ class ReplayBuffer:
     like exponential averaging vs hard updates for the target net.
     You can choose either, or even experiment with both.
 """
-actions = [1, 0, 0, 1, 0, 0, 1, 1, 0, 1]
 
 
 class DQNNet(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=86):
         super(DQNNet, self).__init__()
-        self.layer1 = nn.Linear(input_size, 128)
-        self.layer2 = nn.Linear(128, 128)
-        self.layer3 = nn.Linear(128, output_size)
+        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.layer2 = nn.Linear(hidden_size, hidden_size)
+        self.layer3 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
         x = F.relu(self.layer1(x))
@@ -131,22 +127,12 @@ class DQNNet(nn.Module):
 
     @torch.no_grad()
     def play(self, obs, env, eps=0.0, steps=0):
-
         qvals = self(obs)
-        random_number = random.random()
-        if random_number <= eps: # or steps < 8:
-            # return np.random.choice(len(qvals))
+        if random.random() <= eps:
             action = env.action_space.sample()
-            # action = actions[steps]
-            return action
-
-        # You can also randomly break ties here.
-        print(qvals)
-        x = torch.argmax(qvals)
-
-        # Cast from tensor to int so gym does not complain
-        return int(x)
-
+        else:
+            action = torch.argmax(qvals).item()  # Ensuring action is a Python int
+        return action
 
 class DQNPolicy(Policy):
     def __init__(self, net : DQNNet):
@@ -168,8 +154,8 @@ class DQNTrainer(Trainer):
             self, env, state_dim, num_actions,
             # TODO: Find good hyperparameters working for all three environments and set them as default values.
             # During the grading, we will test your implementation on your own default hyperparameters.
-            lr=0.001, mini_batch=8, max_buffer_size=10000, n_steps=1,
-            initial_eps=0.9, final_eps=0.05, mode=DOUBLE_DQN,
+            lr=0.001, mini_batch=64, max_buffer_size=10000, n_steps=1,
+            initial_eps=0.99, final_eps=0.2, mode=DQN, update_target_every=10,
             **kwargs
         ) -> None:
         super(DQNTrainer, self).__init__(env)
@@ -206,6 +192,7 @@ class DQNTrainer(Trainer):
         self.final_eps = final_eps
 
         self.mode = mode
+        self.update_target_every = update_target_every
 
     """
         You can modify or even remove the methods `loss_fn`, `calculate_targets` and `update_net`.
@@ -236,24 +223,37 @@ class DQNTrainer(Trainer):
         Returns:
             torch.Tensor: Target Q-values for the batch.
         """
+        # Initialize a tensor to store next state values; start with zeros for all states
         next_state_values = torch.zeros(self.mini_batch)
 
+        # Disable gradient computation for target calculation
         with torch.no_grad():
             if self.mode == "DQN":
+                # For standard DQN, use the policy network to compute Q-values for the next states
+                # Take the maximum Q-value for each state (Q-learning update rule)
                 next_state_values[non_final_mask] = self.net(non_final_next_states).max(1).values
 
             elif self.mode == "DQN+target":
+                # For DQN with a target network, use the target network to compute Q-values for the next states
+                # Again, take the maximum Q-value for each state
                 next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1).values
 
             elif self.mode == "DoubleDQN":
+                # For Double DQN:
+                # Step 1: Use the policy network to select the best action (argmax) for each next state
                 next_action_indices = self.net(non_final_next_states).argmax(1, keepdim=True)
+                # Step 2: Use the target network to evaluate the Q-value of the selected action
                 next_state_values[non_final_mask] = self.target_net(non_final_next_states).gather(1, next_action_indices).squeeze(1)
 
             else:
+                # Raise an error if the mode is not recognized
                 raise ValueError(f"Unknown mode: {self.mode}")
 
-        # Calculate the target Q-values using the Bellman equation
+        # Calculate the target Q-values using the Bellman equation:
+        # target = reward + gamma * max(next_state_value)
         target = reward_batch + (gamma * next_state_values)
+
+        # Return the computed target Q-values
         return target
 
     def update_net(self, gamma, *args):
@@ -268,10 +268,9 @@ class DQNTrainer(Trainer):
         transitions = self.buffer.sample(self.mini_batch)
         batch = Transition(*zip(*transitions))
 
-        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
-                                                batch.next_state)), dtype=torch.bool)
-        non_final_next_states = torch.cat([s for s in batch.next_state
-                                           if s is not None])
+        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool)
+        x = [s for s in batch.next_state if s is not None]
+        non_final_next_states = torch.cat(x)
         state_batch = torch.cat(batch.state)
         action_batch = torch.cat(batch.action)
         reward_batch = torch.cat(batch.reward)
@@ -289,44 +288,94 @@ class DQNTrainer(Trainer):
         self.optimizer.step()
 
     def train(self, gamma, train_time_steps) -> DQNPolicy:
+        """
+        Train the DQN agent on the given environment.
+
+        Args:
+            gamma (float): Discount factor for future rewards.
+            train_time_steps (int): Total number of training time steps.
+
+        Returns:
+            DQNPolicy: The trained policy network.
+        """
+        # Reset the environment and get the initial state
         state, _ = self.env.reset(seed=42)
+        # Convert state to a PyTorch tensor and add a batch dimension
         state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-        eps = 0.9
+
+        # Initialize epsilon for epsilon-greedy exploration
+        eps = 0.9  # Starting exploration rate
+        # TAU parameter for soft updates of the target network
         TAU = 0.005
+        # Counter for the number of steps
         step = 0
 
+        # Log the mode being trained (DQN, DQN+target, or DoubleDQN)
+        print(f"Training {self.mode}")
+
+        # Main training loop
         while step < train_time_steps:
+            # Log progress every 1000 steps
+            if (step % 1000) == 0:
+                print(f"step: {step // 1000}")
+
+            # Select an action using the epsilon-greedy policy
             action = self.net.play(state, self.env, eps, step)
+
+            # Take a step in the environment and observe the result
             next_state, reward, terminated, truncated, _ = self.env.step(action)
-            action = torch.tensor([[action]])
-            reward = torch.tensor([reward])
+
+            # Convert action and reward to PyTorch tensors
+            action = torch.tensor([[action]])  # Add batch dimension
+            reward = torch.tensor([reward])  # Convert to tensor
+
+            # Convert next_state to a PyTorch tensor
             next_state = tu.to_torch(next_state)
+
+            # Determine if the episode is done (terminated or truncated)
             done = terminated or truncated
 
+            # If the episode terminated, set next_state to None
             if terminated:
                 next_state = None
             else:
+                # Otherwise, convert next_state to a tensor and add a batch dimension
                 next_state = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
 
+            # Add the transition to the replay buffer
             self.buffer.insert((state, action, reward, next_state, done))
+
+            # Update the current state to the next state
             state = next_state
 
+            # If the episode is done, reset the environment
             if done:
                 state, _ = self.env.reset()
                 state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
 
+            # Perform a gradient descent step to update the main network
             self.update_net(gamma)
 
-            target_net_state_dict = self.target_net.state_dict()
-            policy_net_state_dict = self.net.state_dict()
-            for key in policy_net_state_dict:
-                target_net_state_dict[key] = policy_net_state_dict[key] * TAU + target_net_state_dict[key] * (
-                        1 - TAU)
-            self.target_net.load_state_dict(target_net_state_dict)
+            # Perform a soft update of the target network using Polyak averaging
+            if step % self.update_target_every == 0:
+                target_net_state_dict = self.target_net.state_dict()
+                policy_net_state_dict = self.net.state_dict()
+                for key in policy_net_state_dict:
+                    # Blend the weights of the main and target networks
+                    target_net_state_dict[key] = policy_net_state_dict[key] * TAU + target_net_state_dict[key] * (1 - TAU)
+                # Load the updated parameters into the target network
+                self.target_net.load_state_dict(target_net_state_dict)
 
+            # Decay epsilon for exploration-exploitation tradeoff
             eps = max(self.final_eps, eps - (self.initial_eps - self.final_eps) / train_time_steps)
+
+            # Log the current epsilon value
+            print(eps)
+
+            # Increment the step counter
             step += 1
 
+        # Return the trained policy network wrapped in a DQNPolicy object
         return DQNPolicy(self.net)
 
 
@@ -353,26 +402,53 @@ def get_env_dimensions(env):
     Demonstration code - get states/actions, play randomly
 """
 def example_human_eval(env_name):
+    DQN = "DQN"
+    DQN_TARGET = "DQN+target"
+    DOUBLE_DQN = "DoubleDQN"
     env = gym.make(env_name)
     state_dim, num_actions = get_env_dimensions(env)
 
-    trainer = DQNTrainer(env, state_dim, num_actions)
+    trainer1 = DQNTrainer(env, state_dim, num_actions, mode=DQN)
+    trainer2 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
+    trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
 
     # Train the agent on 1000 steps.
-    pol = trainer.train(0.99, 1000)
+    pol1 = trainer1.train(0.99, 1000)
+    pol2 = trainer2.train(0.99, 1000)
+    pol3 = trainer3.train(0.99, 1000)
 
     # Visualize the policy for 10 episodes
     human_env = gym.make(env_name, render_mode="human")
-    for _ in range(5):
+    for i in range(3):
+        print(f"Attempts number {i}")
         env_data = human_env.reset()
         state = env_data[0]
         done = False
-        while not done:
-            action = pol.play(tu.to_torch(state), human_env)
+        counter = 0
+        while not done and counter < 100:
+            action = pol1.play(tu.to_torch(state), human_env)
             state, _, done, _, _ = human_env.step(action)
+            counter += 1
+        print(f"DQN = {counter}")
+        env_data = human_env.reset()
+        done = False
+        counter = 0
+        while not done and counter < 100:
+            action = pol2.play(tu.to_torch(state), human_env)
+            state, _, done, _, _ = human_env.step(action)
+            counter += 1
+        print(f"DQN+target = {counter}")
+        env_data = human_env.reset()
+        done = False
+        counter = 0
+        while not done and counter < 100:
+            action = pol3.play(tu.to_torch(state), human_env)
+            state, _, done, _, _ = human_env.step(action)
+            counter += 1
+        print(f"DoubleDQN = {counter}")
 
 
 if __name__ == "__main__":
     # Evaluate your algorithm on the following three environments
-    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v2"]
-    example_human_eval(env_names[2])
+    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v3"]
+    example_human_eval(env_names[1])

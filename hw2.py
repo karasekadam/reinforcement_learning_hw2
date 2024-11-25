@@ -374,5 +374,5 @@ def example_human_eval(env_name):
 
 if __name__ == "__main__":
     # Evaluate your algorithm on the following three environments
-    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v3"]
-    example_human_eval(env_names[0])
+    env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v2"]
+    example_human_eval(env_names[2])

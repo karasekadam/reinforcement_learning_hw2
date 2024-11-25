@@ -11,6 +11,7 @@ import torch.nn.functional as F
 
 from collections import namedtuple, deque
 import random
+import math
 
 
 torch.manual_seed(42)
@@ -163,8 +164,8 @@ class DQNTrainer(Trainer):
             self, env, state_dim, num_actions,
             # TODO: Find good hyperparameters working for all three environments and set them as default values.
             # During the grading, we will test your implementation on your own default hyperparameters.
-            lr=0.001, mini_batch=8, max_buffer_size=10000, n_steps=1,
-            initial_eps=1.0, final_eps=0.01, mode=DQN, update_target_every=10,
+            lr=0.001, mini_batch=128, max_buffer_size=100000, n_steps=1,
+            initial_eps=1.0, final_eps=0.01, mode=DQN, update_target_every=1,
             **kwargs
         ) -> None:
         super(DQNTrainer, self).__init__(env)
@@ -330,6 +331,8 @@ class DQNTrainer(Trainer):
             
             if (step % 1000) == 0:
                 print(f"step: {step // 1000}")
+            if step != 0 and (step % 5000) == 0:
+                print(f"Mean Undiscounted Return: {np.mean(self.episode_rewards)}")
 
             # Select an action using the epsilon-greedy policy
             action = self.net.play(state, self.env, eps, step)
@@ -365,6 +368,7 @@ class DQNTrainer(Trainer):
             # If the episode is done, reset the environment
             if done:
                 self.episode_rewards.append(total_reward)
+                total_reward = 0
                 state, _ = self.env.reset()
                 state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
 
@@ -382,7 +386,8 @@ class DQNTrainer(Trainer):
                 self.target_net.load_state_dict(target_net_state_dict)
 
             # Decay epsilon for exploration-exploitation tradeoff
-            eps = max(self.final_eps, eps - (self.initial_eps - self.final_eps) / train_time_steps)
+            decay_rate = 0.001  # Adjust the rate of decay
+            eps = self.final_eps + (self.initial_eps - self.final_eps) * math.exp(-decay_rate * step)
 
             # Log the current epsilon value
             # print(eps)
@@ -423,12 +428,12 @@ def example_human_eval(env_name):
     env = gym.make(env_name)
     state_dim, num_actions = get_env_dimensions(env)
 
-    trainer1 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
+    trainer1 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET, lr= 0.005, initial_eps=0.99)
     # trainer2 = DQNTrainer(env, state_dim, num_actions, mode=DQN_TARGET)
     # trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
 
     # Train the agent on 1000 steps.
-    pol1 = trainer1.train(0.99, 5000)
+    pol1 = trainer1.train(0.99, 50000)
     mean_undiscounted_return = np.mean(trainer1.episode_rewards)
     print(f"Mean Undiscounted Return: {mean_undiscounted_return}")
     # pol2 = trainer2.train(0.99, 5000)
@@ -468,4 +473,4 @@ def example_human_eval(env_name):
 if __name__ == "__main__":
     # Evaluate your algorithm on the following three environments
     env_names = ["CartPole-v1", "Acrobot-v1", "LunarLander-v3"]
-    example_human_eval(env_names[0])
+    example_human_eval(env_names[1])

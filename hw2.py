@@ -56,12 +56,15 @@ class ReplayBuffer:
         It is not part of the required interface.
     """
 
-    def __init__(self, capacity):
+    def __init__(self, capacity, n_steps: int, gamma: float = 0.99):
         self.idx = 0
         self.capacity = capacity
 
         # s, a, r, s', done
         self.transitions = []
+        self.buffer = deque(maxlen=n_steps)
+        self.gamma = gamma
+        self.n_steps = n_steps
 
     def insert(self, transition):
         """
@@ -69,11 +72,20 @@ class ReplayBuffer:
 
             `transition` is a tuple (s, a, r, s', done)
         """
-        if len(self.transitions) < self.capacity:
-            self.transitions.append(transition)
-        else:
-            self.transitions[self.idx] = transition
-            self.idx = (self.idx + 1) % self.capacity
+        self.buffer.append(transition)
+        if len(self.buffer) == self.n_steps:
+            state, action, reward, next_state, done = self.buffer[0]
+            total_reward = sum(
+                self.gamma ** i * self.buffer[i][2] for i in range(self.n_steps)
+            )
+            final_state = self.buffer[-1][3]
+            final_done = any(t[4] for t in self.buffer)  # True if any step is terminal
+            self.buffer.popleft()
+            if len(self.transitions) < self.capacity:
+                self.transitions.append((state, action, total_reward, final_state, final_done))
+            else:
+                self.transitions[self.idx] = (state, action, total_reward, final_state, final_done)
+                self.idx = (self.idx + 1) % self.capacity
 
     def sample(self, batch_size):
         """
@@ -83,7 +95,6 @@ class ReplayBuffer:
             raise RuntimeError("Not enough transitions in replay buffer.")
 
         batch = random.sample(self.transitions, batch_size)
-        # batch = self.transitions
 
         return batch
 
@@ -186,7 +197,7 @@ class DQNTrainer(Trainer):
         self.optimizer = optim.Adam(self.net.parameters(), lr=lr, amsgrad=True)
 
         # Initialize the buffer
-        self.buffer = ReplayBuffer(max_buffer_size)
+        self.buffer = ReplayBuffer(max_buffer_size, n_steps)
         self.mini_batch = mini_batch
         self.initial_eps = initial_eps
         self.final_eps = final_eps
@@ -309,6 +320,7 @@ class DQNTrainer(Trainer):
         TAU = 0.005
         # Counter for the number of steps
         step = 0
+        self.buffer.gamma = gamma
 
         # Log the mode being trained (DQN, DQN+target, or DoubleDQN)
         print(f"Training {self.mode}")
@@ -330,7 +342,8 @@ class DQNTrainer(Trainer):
             reward = torch.tensor([reward])  # Convert to tensor
 
             # Convert next_state to a PyTorch tensor
-            next_state = tu.to_torch(next_state)
+            # next_state = tu.to_torch(next_state)
+            next_state = next_state
 
             # Determine if the episode is done (terminated or truncated)
             done = terminated or truncated
@@ -370,7 +383,7 @@ class DQNTrainer(Trainer):
             eps = max(self.final_eps, eps - (self.initial_eps - self.final_eps) / train_time_steps)
 
             # Log the current epsilon value
-            print(eps)
+            # print(eps)
 
             # Increment the step counter
             step += 1
@@ -413,9 +426,9 @@ def example_human_eval(env_name):
     trainer3 = DQNTrainer(env, state_dim, num_actions, mode=DOUBLE_DQN)
 
     # Train the agent on 1000 steps.
-    pol1 = trainer1.train(0.99, 1000)
-    pol2 = trainer2.train(0.99, 1000)
-    pol3 = trainer3.train(0.99, 1000)
+    pol1 = trainer1.train(0.99, 5000)
+    pol2 = trainer2.train(0.99, 5000)
+    pol3 = trainer3.train(0.99, 5000)
 
     # Visualize the policy for 10 episodes
     human_env = gym.make(env_name, render_mode="human")
@@ -425,7 +438,7 @@ def example_human_eval(env_name):
         state = env_data[0]
         done = False
         counter = 0
-        while not done and counter < 100:
+        while not done and counter < 200:
             action = pol1.play(tu.to_torch(state), human_env)
             state, _, done, _, _ = human_env.step(action)
             counter += 1
@@ -433,7 +446,7 @@ def example_human_eval(env_name):
         env_data = human_env.reset()
         done = False
         counter = 0
-        while not done and counter < 100:
+        while not done and counter < 200:
             action = pol2.play(tu.to_torch(state), human_env)
             state, _, done, _, _ = human_env.step(action)
             counter += 1
@@ -441,7 +454,7 @@ def example_human_eval(env_name):
         env_data = human_env.reset()
         done = False
         counter = 0
-        while not done and counter < 100:
+        while not done and counter < 200:
             action = pol3.play(tu.to_torch(state), human_env)
             state, _, done, _, _ = human_env.step(action)
             counter += 1
